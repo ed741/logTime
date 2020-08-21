@@ -1,0 +1,176 @@
+#!/usr/bin/python3
+import datetime
+import dateutil.parser
+import pickle
+import os.path
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+import argparse
+
+# If modifying these scopes, delete the file token.pickle.
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+verbose = 0
+
+calenderSummary = "logTime"
+
+
+def pv(str, v=1):
+  if v <= verbose:
+    print(str)
+
+
+def buildCalenderService():
+  creds = None
+  # The file token.pickle stores the user's access and refresh tokens, and is
+  # created automatically when the authorization flow completes for the first
+  # time.
+  if os.path.exists('token.pickle'):
+    with open('token.pickle', 'rb') as token:
+      creds = pickle.load(token)
+      pv("Credentials loaded", v=2)
+  # If there are no (valid) credentials available, let the user log in.
+  if not creds or not creds.valid or creds.scopes != SCOPES:
+    if creds and creds.expired and creds.refresh_token:
+      pv("Credentials need to be refreshed", v=1)
+      creds.refresh(Request())
+    else:
+      flow = InstalledAppFlow.from_client_secrets_file(
+        'credentials.json', SCOPES)
+      creds = flow.run_local_server(port=0)
+      pv("Using Credentials", v=2)
+    # Save the credentials for the next run
+    with open('token.pickle', 'wb') as token:
+      pickle.dump(creds, token)
+
+  pv("Building Service", v=3)
+  service = build('calendar', 'v3', credentials=creds)
+  pv("Service Built", v=2)
+  return service
+
+
+def getEventData():
+  dparseargs = {"dayfirst": True, "fuzzy": True}
+  parser = argparse.ArgumentParser()
+  parser.add_argument("-l", type=float, help="hours of time to log")
+  parser.add_argument("-e", type=lambda s: dateutil.parser.parse(s, **dparseargs), help="end time")
+  parser.add_argument("-s", type=lambda s: dateutil.parser.parse(s, **dparseargs), help="start time")
+  parser.add_argument("-d", type=str, help="description", default="Work")
+  args = parser.parse_args()
+
+  if args.l and args.e and args.s:
+    print("Cannot use -l, -e, and -s in one go")
+    exit(-1)
+  if not (args.l or args.e or args.s):
+    print("You must use at least one of -l, -e, and -s")
+    exit(-1)
+
+  if args.s:
+    pv("s: " + str(args.s), v=3)
+  if args.e:
+    pv("e: " + str(args.e), v=3)
+  if args.l:
+    pv("l: " + str(args.l), v=3)
+
+  start = None
+  end = None
+  if args.s:
+    start = args.s
+    if args.l:
+      end = start + datetime.timedelta(hours=args.l)
+    elif not args.e:
+      end = datetime.datetime.now()
+  if args.e:
+    end = args.e
+    if args.l:
+      start = end - datetime.timedelta(hours=args.l)
+    elif not args.s:
+      start = datetime.datetime.now()
+  if start is None and end is None:
+    end = datetime.datetime.now()
+    start = end - datetime.timedelta(hours=args.l)
+
+  if start > end:
+    t = end
+    end = start
+    start = t
+
+  print("start: " + str(start))
+  print("end:   " + str(end))
+  return start, end, args.d
+
+
+def main():
+  pv("Starting logTime", v=1)
+
+  start, end, message = getEventData()
+
+  service = buildCalenderService()
+
+  # Call the Calendar API
+  # now = datetime.datetime.utcnow().isoformat() + 'Z' # 'Z' indicates UTC time
+  # print('Getting the upcoming 10 events')
+  # events_result = service.events().list(calendarId='primary', timeMin=now,
+  #                                       maxResults=10, singleEvents=True,
+  #                                       orderBy='startTime').execute()
+  # events = events_result.get('items', [])
+  #
+  # if not events:
+  #   print('No upcoming events found.')
+  # for event in events:
+  #   start = event['start'].get('dateTime', event['start'].get('date'))
+  #   print(start, event['summary'])
+
+  calList = service.calendarList().list().execute()
+  pv(calList, v=5)
+  cals = calList.get('items', [])
+  logCalId = None
+  pv("available Calenders:", v=2)
+  for c in cals:
+    pv("\t- " + c.get("summary"), v=2)
+    if c.get("summary") == calenderSummary:
+      logCalId = c.get("id")
+
+  if logCalId is None:
+    print("logTime calender not Found! make new calender? ")
+    if (input("y/n?") is not "y"):
+      print("Okay, Exiting Now.")
+      exit(0)
+
+    newCalendar = service.calendars().insert(
+      body={'summary': calenderSummary, 'description': "Calendar to track time using LogTime"}).execute()
+
+    pv(newCalendar, v=4)
+    logCalId = newCalendar.get("id")
+
+  pv("logTime Calendar found: " + logCalId, v=2)
+  # calendars = service.calendars()
+  # cal = calendars.get(calendarId=logCalId).execute()
+  # print(cal)
+  pv("start datetime: " + start.isoformat('T'), v=2)
+  pv("end   datetime: " + end.isoformat('T'), v=2)
+  event = service.events().insert(calendarId=logCalId, body=
+  {
+    "summary": message,
+    "start"  : {
+      "timeZone": "Europe/London",
+      "dateTime": start.isoformat('T')
+    },
+    "end": {
+      "timeZone": "Europe/London",
+      "dateTime": end.isoformat('T')
+    },
+    "notes": "AutoGenerated event from LogTime"
+  }
+                          ).execute()
+
+  es = dateutil.parser.isoparse(event.get("start").get("dateTime"))
+  ee = dateutil.parser.isoparse(event.get("end").get("dateTime"))
+  length = ee-es
+  hours = round(length.total_seconds()/ 3600)
+  print("logged time: ~" + str(int(hours)) +" hours")
+  pv("logTime exiting", v=1)
+
+
+if __name__ == '__main__':
+  main()

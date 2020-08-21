@@ -1,0 +1,5 @@
+#!/bin/bash
+source /usr/local/lib/logTime/venv/bin/activate
+cd /usr/local/lib/logTime
+python /usr/local/lib/logTime/logtime.py "$@"
+deactivate
